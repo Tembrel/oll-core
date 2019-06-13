@@ -24,33 +24,22 @@
 %                                                                             %
 % openLilyLib is maintained by Urs Liska, ul@openlilylib.org                  %
 % and others.                                                                 %
-%       Copyright Urs Liska, 2016                                             %
+%       Copyright Urs Liska, 2019                                             %
 %                                                                             %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% Provide the command
-%    \addGuilePath
-% to add a folder to Guile's module load path
+%{
+  This files contains utility routines to load include files relative to the input file
+%}
+
+% Include a file relative to the compiled input file if present
+% The format-string argument is a format string with one ~a parameter,
+% which will be replaced with the absolute path to the compiled input file
+% without the file extension.
+% Can be used to include files without explicit markup when placed in a library.
 %
-% Originally provided by Jan-Peter Voigt
-% and simplified by Urs Liska
-
-\version "2.19.22"
-
-% add a directory to Guile's %load-path (Scheme module search path)
-% If path is an absolute path it is simply normalized,
-% but if it's relative it is appended to the directory
-% of the file the command is used in.
-#(define-public addGuilePath
-   (define-void-function (path)(string?)
-     (let* ((path-arg (os-path-split path))
-            (joined-path
-             (if (os-path-absolute? path-arg)
-                 (os-path-normalize path-arg)
-                 (os-path-normalize
-                  (append
-                   (os-path-split (this-dir))
-                   path-arg))))
-            (new-path (os-path-join joined-path)))
-       (if (not (member new-path %load-path))
-           (set! %load-path `(,new-path ,@%load-path))))))
+% Example:
+% \loadInclude "~a-include.ily"
+loadInclude =
+#(define-void-function (format-string)(string?)
+   (immediate-include (format format-string (os-path-input-basename))))

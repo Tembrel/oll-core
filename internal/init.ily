@@ -36,8 +36,8 @@
 % After this Scheme modules can be addressed starting from openLilyLib's
 % root directory (the parent of oll-core)
 \include "add-guile-path.ily"
-\addGuilePath #(os-path-join-unix openlilylib-root)
-\addGuilePath #(os-path-join-unix (append openlilylib-root '(oll-core scheme)))
+\addGuilePath #(os-path-join openlilylib-root)
+\addGuilePath #(os-path-join (append openlilylib-root '(oll-core scheme)))
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%% Common functionality
@@ -45,6 +45,7 @@
 
 % A collection of general-purpose predicates
 #(use-modules (oll-core internal tools))
+#(use-modules (oll-core internal grob-tools))
 #(use-modules (oll-core internal control))
 
 % Version predicates to execute code for specific LilyPond versions
@@ -68,6 +69,10 @@
 
 % Functionality to load and manage modules
 \include "module-handling.ily"
+
+% Functionality to load additional files
+% (submodules load.tools and load.templates have to be loaded explicitly)
+\loadModule oll-core.load
 
 % Welcome message.
 % First set log level to 'log so it will be displayed,

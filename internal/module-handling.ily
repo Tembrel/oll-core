@@ -88,37 +88,25 @@
                              (symbol-list? entry))) obj)))
        #t #f))
 
-
-% Alist with mandatory options for library declarations
-% Each entry is a list with
-% - option name
-% - type predicate
-% - Default value
-#(define oll-mandatory-props
-   (make-mandatory-props
-    `((name ,string? "No package name specified")
-      (display-name ,string? "No package display name specified")
-      (short-description ,string? "No short description available")
-      (description ,string? "No description available")
-      (maintainers ,oll-maintainers? "No <maintainer.s@available>")
-      (version ,oll-version-string? "0.0.0")
-      (oll-core ,oll-version-string? "0.0.0")
-      (license ,string? "No license specified")
-      (website ,repo-url? "http://no.website.specified/")
-      (repository ,repo-url? "http://no.repository.specified/")
-      )))
-
-% Alist with recognized options for library declarations
-% If an option is in this list it is type-checked against the given predicate.
-#(define oll-accepted-props
-   (make-accepted-props
-    `((lilypond-min-version . ,oll-version-string?)
-      (lilypond-max-version . ,oll-version-string?)
-      (dependencies . ,list?)
-      (contributors . ,oll-maintainers?)
-      (modules . ,oll-module-list?)
-      )))
-
+% Define mandatory and optional properties accepted in package declarations
+#(define oll-package-props
+   `(strict
+     (? name                 ,string? "No package name specified")
+     (? display-name         ,string? "No package display name specified")
+     (? short-description    ,string? "No short description available")
+     (? description          ,string? "No description available")
+     (? maintainers          ,oll-maintainers? "No <maintainer.s@available>")
+     (? version              ,oll-version-string? "0.0.0")
+     (? oll-core             ,oll-version-string? "0.0.0")
+     (? license              ,string? "No license specified")
+     (? website              ,repo-url? "http://no.website.specified/")
+     (? repository           ,repo-url? "http://no.repository.specified/")
+  ;; accepted/optional properties
+     (? lilypond-min-version ,oll-version-string?)
+     (? lilypond-max-version ,oll-version-string?)
+     (? dependencies         ,list?)
+     (? contributors         ,oll-maintainers?)
+     (? modules              ,oll-module-list?)))
 
 #(define (parse-meta lines)
    "Parse the VBCL string list and perform type checking and defaulting.
@@ -127,7 +115,7 @@
    (let*
     ((orig-meta (parse-vbcl-config lines))
      (meta (if orig-meta
-               (check-props #t oll-mandatory-props oll-accepted-props orig-meta)
+               (validate-props oll-package-props orig-meta)
                #f)))
     meta))
 
@@ -147,6 +135,19 @@
     (registerOption `(,name meta) meta)
     #t))
 
+% Test if a given package is already loaded
+ollPackageLoaded =
+#(define-scheme-function (package)(symbol?)
+   (if (memq package (getOption '(loaded-packages))) #t #f))
+
+% Test if a given module in a package is already loaded
+ollModuleLoaded =
+#(define-scheme-function (package module)(symbol? symbol-list-or-symbol?)
+   (let ((module (if (symbol? module) (list module) module)))
+     (if
+      (and (ollPackageLoaded package)
+           (member module (getOptionWithFallback (list 'loaded-modules package) '())))
+      #t #f)))
 
 %{
   Load an openLilyLib package.
@@ -163,11 +164,11 @@ loadPackage =
    ((ly:context-mod?) symbol?)
    "Load an openLilyLib package"
    (let ((name (symbol-downcase name)))
-     (if (not (member name (getOption '(loaded-packages))))
+     (if (not (ollPackageLoaded name))
          ;; load the package because it's new
          (let*
           ((package-root (append openlilylib-root (list name)))
-           (package-file (os-path-join-unix (append package-root '("package.ily"))))
+           (package-file (os-path-join (append package-root '("package.ily"))))
            (exists (file-exists? package-file))
            (loaded (immediate-include package-file)))
           (if (not loaded)
@@ -181,7 +182,7 @@ loadPackage =
               ;; loading of the package file has completed successfully
               ;; read metadata and register package
               (let*
-               ((meta-file (os-path-join-unix (append package-root '("package.cnf"))))
+               ((meta-file (os-path-join (append package-root '("package.cnf"))))
                 (meta-lines (read-lines-from-file meta-file))
                 (meta (if meta-lines (parse-meta meta-lines) #f))
                 (registered (if meta (register-package name package-root meta) #f)))
@@ -245,24 +246,25 @@ loadModule =
    ((ly:context-mod?) symbol-list?)
    (let*
     (;(module-path (map symbol-downcase module-path))
-     (package (car module-path))
-     (module (cdr module-path)))
+      (package (car module-path))
+      (module (cdr module-path)))
 
     ;; implicitly load package when not already loaded
-    (if (not (member package (getOption '(loaded-packages))))
+    (if (not (ollPackageLoaded package))
         (loadPackage package))
 
     (let
-     ((loaded (member module (getOptionWithFallback (list 'loaded-modules package) '()))))
+     ((loaded (ollModuleLoaded package module)))
      ;; check if module (and package) has already been loaded and warn appropriately
      ;; (as this may indicate erroneous input files)
      (if loaded
-         (oll:warn "Trying to reload module \"~a\". Skipping. Options will be set anyway."
-           (os-path-join-dots (append (list package) module)))
+         (if options
+             (oll:warn "Trying to reload module \"~a\". Skipping. Options will be set anyway."
+               (os-path-join-dots (append (list package) module))))
          ;; else load module and register
          (let*
           ((module-base
-            (os-path-join-unix
+            (os-path-join
              (append
               openlilylib-root
               module-path)))

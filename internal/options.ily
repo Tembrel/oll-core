@@ -101,14 +101,202 @@
 
 
 % Convenience function, retrieves a property alist from a context-mod object.
-% mod has to satisfy the ly:context-mod? predicate,
-% returns an alist with all key-value pairs set.
-#(define-public (context-mod->props mod)
-   (map
-    (lambda (prop)
-      (cons (cadr prop) (caddr prop)))
-    (ly:get-context-mods mod)))
+% Properties can optionally be mandatory and type-checked
 
+% First the necessary predicates
+#(define (prop-rule? obj)
+   "Check if obj is a property rule. A property rule can have 5 forms:
+    - arg-name                    (a symbol, stating that this argument is required)
+    - (arg-name)                  (a list with a symbol, same as above)
+    - (arg-name ,type?)           (same as above with a type check)
+    - (? arg-name)                (optional argument, for strict rulesets)
+    - (? arg-name ,type?)         (same as above with a type-check)
+    - (? arg-name ,type? def-v)   (same as above with a default value)
+    Default values aren't checked in this predicate"
+   (let ((obj (if (symbol? obj) (list obj) obj)))
+     (and (list? obj)
+          (not (null? obj))
+          (let*
+           ((opt (if (eq? '? (first obj)) #t #f))
+            (obj (if opt (cdr obj) obj))
+            (l (length obj)))
+           (case l
+             ((1) (symbol? (first obj)))
+             ((2) (and (symbol? (first obj))
+                       (procedure? (second obj))))
+             ((3) (and opt
+                       (symbol? (first obj))
+                       (procedure? (second obj))))
+             (else #f))))))
+
+#(define (enforcement-symbol? obj)
+   (or (eq? 'strict obj)
+       (eq? 'flexible obj)))
+
+#(define (prop-rules? obj)
+   "Check if given object is a property rules structure.
+    This is true when obj:
+    - is a list
+    - its first element is an 'enforcement-symbol?
+    - subsequent elements are 'prop-rule? entries"
+   (and (list? obj)
+        (enforcement-symbol? (first obj))
+        (every prop-rule? (cdr obj))))
+
+#(define (validate-props rules props)
+   "Check a list of properties and return a possibly updated list.
+    - Handle unknown options (remove or not depending on 'strict' or 'flexible' ruleset)
+    - type check
+    - Handle missing properties. If a default is available use that.
+    It is *assumed* without checking that rules satisfies the prop-rules? predicate,
+    which can be justified because the function should not be called from documents."
+   (let*
+    ((strict (eq? (car rules) 'strict))
+     (rules (cdr rules))
+     (rules
+      (map (lambda (rule)
+             (let*
+              ((rule (if (symbol? rule) (list rule) rule))
+               (optional (eq? (first rule) '?))
+               (rule (if optional (cdr rule) rule))
+               (k (first rule))
+               (pred
+                (if (= (length rule) 1)
+                    scheme?
+                    (second rule)))
+               (default
+                (if (= 3 (length rule))
+                    (third rule)
+                    '())))
+              (list k pred default optional)))
+        rules))
+     (missing
+      (delete '()
+        (map (lambda (r)
+               (let*
+                ((k (car r))
+                 (default (third r))
+                 (optional (fourth r))
+                 (prop (assoc-get k props)))
+                (cond
+                 (prop '())
+                 ((not (null? default)) (cons k default))
+                 (optional '())
+                 (else
+                  (begin
+                   (ly:input-warning (*location*)
+                     "Missing mandatory property \"~a\"." k)
+                   '())))))
+          rules)))
+     (props
+      (delete '()
+        (map (lambda (p)
+               (let*
+                ((k (car p)) (v (cdr p)) (rule (assoc-ref rules k)))
+                (cond
+                 ;; unknown option
+                 ((not rule)
+                  (if strict
+                      (begin
+                       (ly:input-warning (*location*)
+                         "Unknown property \"~a\"." k)
+                       '())
+                      p))
+                 ;; type check successful
+                 (((car rule) v) p)
+                 (else
+                  (begin
+                   (ly:input-warning (*location*)
+                     "Type check failed for property \"~a\".\nExpected: ~a, given: ~a"
+                     k (car rule) v)
+                   '())))))
+          props)))
+     )
+    (append props missing)))
+
+% Convert a ly:context-mod? argument to a properties alist
+% Arguments:
+% - rules (optional): a prop-rules? property definition list
+% - mod: the context-mod
+#(define-public context-mod->props
+   (lambda (req . rest)
+     ;unpack mod and rules from the arguments
+     (let ((mod 
+            (cond
+              ((ly:context-mod? req) req)
+              ((and (= 1 (length rest)) (ly:context-mod? (first rest))) (first rest))
+              (else
+                (begin
+                  (ly:error "context-mod->props didn't receive a context-mod")
+                  (ly:make-context-mod)))))
+           (rules (if (prop-rules? req)
+                      req
+                      '(flexible))))
+       (let
+        ((props
+          (map
+           (lambda (prop)
+             (cons (cadr prop) (caddr prop)))
+           (ly:get-context-mods mod))))
+        (if rules
+            (validate-props rules props)
+            props)))))
+
+% Macro to facilitate definition of functions with options.
+% Begin the function definition with 'with-options and give the ruleset
+% before the body of the function.
+% Example:
+% (with-options define-void-function () ()
+%   `(strict
+%      (msg ,string?)
+%      (? author ,string? "Anonymous"))
+%   (pretty-print props))
+% Warning: The body of the function can't be empty.
+#(define (empty-parens? obj)
+   (or (equal? (quote ()) obj)
+       (equal? (quote '()) obj)
+       (equal? (quote `()) obj)))
+
+#(define (make-opts-function-declaration proc vars preds rules optional . body)
+   "Return the declaration of a function with the given arguments."
+   (let* ((vars (append '(opts) vars))
+          (preds
+           (if optional
+               (begin
+                (cond
+                 ((every list? preds)
+                  (ly:warning "defining a with-options function without mandatory arguments."))
+                 ((list? (first preds))
+                  (ly:warning "defining a with-options function where the first argument is optional.")))
+                (append '((ly:context-mod? (ly:make-context-mod))) preds))
+               (append '(ly:context-mod?) preds)))
+          (rules
+           (if (empty-parens? rules)
+               (quote '(flexible))
+               rules)))
+     `(,proc ,vars ,preds
+        (let* ((rules ,rules)
+               (props (context-mod->props rules opts)))
+          . ,body))))
+
+#(define-macro (with-options proc vars preds rules . body)
+   (let ((optional #t))
+     (apply make-opts-function-declaration `(,proc ,vars ,preds ,rules ,optional . ,body))))
+
+#(define-macro (with-opts . rest)
+   `(with-options . ,rest))
+
+#(define-macro (with-required-options proc vars preds rules . body)
+   (let ((optional #f))
+     (apply make-opts-function-declaration `(,proc ,vars ,preds ,rules ,optional . ,body))))
+
+#(define-macro (with-req-opts . rest)
+   `(with-required-options . ,rest))
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% DEPRECATED %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Please use validate-props instead %%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % check a property alist (or a ly:context-mod?) for adherence to
 % a given set of rules/templates
@@ -122,6 +310,9 @@
 #(define check-props
    (define-scheme-function (force-mand mand accepted props)
      ((boolean?) oll-mand-props? oll-accepted-props? al-or-props?)
+     (ly:input-warning (*location*) "
+function 'check-props' is deprecated (March 2018) and may eventually
+be removed. Please use 'validate-props' instead.")
      (let*
       ((props (if (ly:context-mod? props) (context-mod->props props) props))
 
@@ -253,6 +444,61 @@ setChildOption =
          (oll:warn
           "Trying to add child to non-existent option: ~a"
           (os-path-join-dots parent-path)))))
+
+% Set multiple child options below a given option path.
+% #1: Optional boolean <force-set>
+%     If set this will implicitly create a missing 'parent' node
+% #2: <parent-path>
+%     A path within the a-tree. Child options will be set/created below
+% #3: <children>
+%     an alist with the children
+setChildOptions =
+#(define-void-function (force-set parent-path children)
+   ((boolean?) symbol-list? alist?)
+   (let ((is-set (option-registered? parent-path)))
+     (if (and (not is-set) force-set)
+         ;; register missing parent option
+         (begin
+          (registerOption parent-path '())
+          (set! is-set #t)))
+     (if is-set
+         (for-each
+          (lambda (opt)
+            (setChildOption parent-path (car opt) (cdr opt)))
+          children)
+         (oll:warn
+          "Trying to add children to non-existent option: ~a"
+          (os-path-join-dots parent-path)))))
+
+% Append a value to a list option
+% #1: Optional boolean <create>
+%     If set this will implicitly create an empty list to append to
+% #2: <path>
+%     A path within the option tree.
+%     If <create> is not #t and <path> doesn't exist a warning is issued
+% #3: <val>
+%     Any Scheme value to be appended to the list option
+appendToOption =
+#(define-void-function (create path val)
+   ((boolean?) symbol-list? scheme?)
+   (let
+    ((opt
+      ;; Handle non-existing option, either by creating an empty list
+      ;; or by triggering the warning
+      (if create
+          (getOptionWithFallback path '())
+          (getOptionWithFallback path #f))))
+    (cond
+     ((not opt)
+      (oll:warn
+       "Trying to append to non-existent option: ~a"
+       (os-path-join-dots path)))
+     ((not (list? opt))
+      (oll:warn
+       "Trying to append to non-list option: ~a"
+       (os-path-join-dots path)))
+     (else
+      (setOption path (append opt (list val)))))))
 
 % Retrieve an option
 % Provide a tree path in dotted or list notation

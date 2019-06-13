@@ -58,15 +58,13 @@
 % force an arbitrary path to be a list of strings.
 % From there we can reconstruct paths in arbitrary ways.
 
-#(define-public (os-path-split path)
+#(define (do-os-path-split path sep)
    "Returns a string list with path elements.
-    Takes either a path string or a list.
-    If 'path' is a string it is split
-    respecting the OS dependent path separator,
-    if it is a list then the list is returned,
-    while elements are converted from symbol to string if necessary."
+    Takes either a path string or a list, and a separator char.
+    Elements of a given list are converted from symbol to string
+    if necessary."
    (if (string? path)
-       (string-split path os-path-separator-char)
+       (string-split path sep)
        (map
         (lambda (element)
           (if (string? element)
@@ -74,15 +72,33 @@
               (symbol->string element)))
         path)))
 
+#(define-public (os-path-split path)
+   "Returns a string list with path elements.
+    Takes either a path string or a list.
+    If 'path' is a string it is split using the forward slash as
+    path separator (as this is the default case in LilyPond),
+    if it is a list then the list is returned,
+    with elements converted from symbol to string if necessary."
+   (do-os-path-split path #\/))
+
+#(define-public (os-path-split-os path)
+   "Returns a string list with path elements.
+    Takes either a path string or a list.
+    If 'path' is a string it is split
+    respecting the OS dependent path separator,
+    if it is a list then the list is returned,
+    with elements converted from symbol to string if necessary."
+   (do-os-path-split path os-path-separator-char))
+
 % Output paths in different forms
 % First force the input to be a list, then convert it to the desired format
 % All the functions take a 'path' argument as processed by os-path-split.
 
-#(define-public (os-path-join path)
+#(define-public (os-path-join-os path)
    "Converts a given path to a path corresponding to the OS convention"
    (string-join (os-path-split path) os-path-separator-string))
 
-#(define-public (os-path-join-unix path)
+#(define-public (os-path-join path)
    "Converts a given path to a unix-like path"
    (string-join (os-path-split path) "/"))
 
@@ -193,16 +209,65 @@
    (let ((file (this-file)))
      (list-head file (- (length file) 2))))
 
-%%%
-% TODO:
-% This doesn't work correctly so far:
-% How to determine the currently compiled file (name)?
-thisFileCompiled =
-#(define-scheme-function ()()
-   "Return #t if the file where this function is called
-    is the one that is currently compiled by LilyPond."
-   (let ((outname (ly:parser-output-name (*parser*)))
-         (locname (os-path-join-unix (location->normalized-path (*location*)))))
-     (ly:message outname)
-     (regexp-match? (string-match (format "^(.*/)?~A\\.i?ly$" outname) locname))))
+% Return #t if the function is called from the main input file,
+% #f otherwise
+#(define (this-file-compiled?)
+   (equal? (this-file) (os-path-input-file)))
 
+%%%%%%%%%%%%%%%%%%%%%%
+% Directory operations
+%%%%%%%%%%%%%%%%%%%%%%
+
+% Return all files from the given dir
+% as a string list
+#(define (scandir dir)
+   (let ((input-dir (opendir dir))
+         (result '())
+         ;; exclude hidden files and directory links
+         (pattern (make-regexp "^[^.]")))
+     (do ((entry (readdir input-dir) (readdir input-dir))) ((eof-object? entry))
+       (if (regexp-exec pattern entry)
+           (set! result (append result (list entry)))))
+     (closedir input-dir)
+     result))
+
+% Return all subdirectories from the given dir
+% as a string list
+#(define (get-subdirectories dir)
+   (let ((all-files (scandir dir)))
+     (map string->symbol
+       (filter
+        (lambda (file)
+          (if (eq? 'directory
+                   (stat:type (stat (string-append dir "/" file))))
+              #t #f))
+        all-files))))
+
+%%%%%%%%%%%%%%%%%%%%%%%
+% Input file operations
+%
+% Retrieve information and produce variants of the input file name
+%%%%%%%%%%%%%%%%%%%%%%
+
+% Returns a list with the absolute path to the compiled input file
+#(define (os-path-input-file)
+   (let ((input-file (last (command-line))))
+     (os-path-absolute input-file)))
+
+% Returns a string with the absolute path to the compiled input file
+#(define (os-path-input-filename)
+   (os-path-join (os-path-input-file)))
+
+% Returns a list with the absolute path of the directory containing the input file
+#(define (os-path-input-dir)
+   (os-path-dirname (os-path-input-file)))
+
+% Returns a string with the absolute path of the directory containing the input file
+#(define (os-path-input-dirname)
+   (os-path-join (os-path-input-dir)))
+
+% Returns a string wtih the absolute path to the input file, without file extension
+#(define (os-path-input-basename)
+   (format "~a/~a"
+     (os-path-input-dirname)
+     (ly:parser-output-name (*parser*))))
